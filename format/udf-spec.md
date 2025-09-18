@@ -29,12 +29,12 @@ and returns either a single scalar value or a table depending on the UDF type.
 * **Table functions (UDTFs)**: return a table with multiple rows and columns.
 
 Most compute engines (e.g., Spark, Trino) support SQL UDFs. However, without a common standard,
-UDFs cannot easily be shared across engines. This specification establishes a standardized metadata format for UDFs in Iceberg,
-enabling interoperability, versioning across engines.
+UDFs cannot easily be shared across engines. This specification defines a standardized metadata format for UDFs in Iceberg,
+enabling interoperability and consistent versioning across engines.
 
 ## Goals
 
-* A common metadata format for scalar and table SQL UDFs.
+* Define a portable metadata format for scalar and table SQL UDFs.
 
 ## Overview
 
@@ -47,73 +47,65 @@ Each metadata file is self-sufficient and contains recent version history, enabl
 
 ## Specification
 
-### Terms
+### Root Metadata
 
-* **UDF Definition** — Parameters, return type, and function body.
-* **Signature** — A unique combination of parameter types and return type.
-* **Version** — The state of a UDF definition at a point in time.
+| Requirement | Field name         | Description                                                        |
+|-------------|--------------------|--------------------------------------------------------------------|
+| *required*  | `function-uuid`    | A UUID that identifies the UDF, generated when the UDF is created. |
+| *required*  | `format-version`   | Metadata format version (must be `1`).                             |
+| *required*  | `signatures`       | List of function signatures.                                       |
+| *required*  | `versions`         | List of version entries.                                           |
+| *required*  | `current-version`  | The current version.                                               |
+| *optional*  | `location`         | Base location used to store UDF metadata files.                    |
+| *optional*  | `properties`       | Arbitrary key-value properties.                                    |
+| *optional*  | `secure`           | Security/privilege enforcement metadata.                           |
 
-### UDF Metadata
+### Signature Definitions
 
-| Requirement | Field name           | Description                                                                  |
-| ----------- |----------------------|------------------------------------------------------------------------------|
-| *required*  | `function-uuid`      | UUID for the UDF, set at creation. Must remain stable.                       |
-| *required*  | `format-version`     | Integer version of the function metadata format; must be `1`.                |
-| *optional*  | `location`           | Base location used to store UDF metadata files.                              |
-| *required*  | `signatures`         | List of function signatures (parameters and return type).                    |
-| *required*  | `return-type`        | Return type (scalar type or struct for TABLE UDF).                           |
-| *required*  | `current-version-id` | ID of the currently active UDF version.                                      |
-| *required*  | `versions`           | List of known [versions](#versions) of the function.                         |
-| *optional*  | `version-log`        | List of version change entries.                                              |
-| *optional*  | `properties`         | Key-value map for metadata (e.g., `comment`, `version.history.num-entries`). |
-| *required*  | `function-type`      | One of `SCALAR` or `TABLE`. Immutable after creation.                        |
+Each entry defines a logical function shape, reusable across versions and overloads.
 
-### Function Signature
-
-Each entry in `signatures` includes:
-
-| Requirement | Field name     | Description                                        |
-| ----------- | -------------- | -------------------------------------------------- |
-| *required*  | `signature-id` | Unique ID for the function signature.              |
-| *required*  | `parameters`   | List of parameter fields (name, type, doc).        |
-| *required*  | `return-type`  | Return type (scalar type or struct for TABLE UDF). |
+| Requirement | Field name      | Description                                |
+|-------------|-----------------|--------------------------------------------|
+| *required*  | `signature-id`  | Unique ID for the signature.               |
+| *required*  | `parameters`    | List of parameter specs (name, type, doc). |
+| *required*  | `return-type`   | Scalar or struct type.                     |
+| *optional*  | `doc`           | Documentation string.                      |
 
 ### Versions
 
-Each version in `versions` includes:
+Each `version` groups one or more overloads that share the same signature or extend it.
 
-| Requirement | Field name          | Description                                                              |
-| ----------- | ------------------- | ------------------------------------------------------------------------ |
-| *required*  | `version-id`        | ID for the version.                                                      |
-| *required*  | `signature-id`      | ID of the function signature used.                                       |
-| *required*  | `timestamp-ms`      | Time of version creation (ms since epoch).                               |
-| *optional*  | `summary`           | Key-value summary (e.g., `engine-name`, `engine-version`).               |
-| *required*  | `representations`   | List of [representations](#representations) for the function definition. |
-| *optional*  | `default-catalog`   | Catalog to use when references omit catalog.                             |
-| *required*  | `default-namespace` | Namespace to use when references omit namespace.                         |
-| *optional*  | `comment`           | User-provided comment for the function.                                  |
+| Requirement | Field name      | Description                              |
+|-------------|-----------------|------------------------------------------|
+| *required*  | `version-id`    | Identifier for the version.              |
+| *required*  | `overloads`     | List of overload entries.                |
+| *optional*  | `summary`       | Key-value metadata about the version.    |
+| *optional*  | `update-log`    | Tracks when overloads were updated.      |
 
-### Summary
+### Overloads
 
-Metadata map for each version. Common keys:
+Overloads allow multiple implementations of the same signature.
 
-* `engine-name` — Engine that created the version.
-* `engine-version` — Version of the engine.
+| Requirement | Field name         | Description                                                                 |
+|-------------|--------------------|-----------------------------------------------------------------------------|
+| *required*  | `overload-id`      | Unique ID within the version.                                               |
+| *required*  | `signature-id`     | Reference to the signature definition.                                      |
+| *optional*  | `deterministic`    | Boolean flag indicating deterministic behavior.                             |
+| *required*  | `representations`  | List of representations (see below).                                        |
+| *optional*  | `update-at-version`| Version number where this overload was last updated.                        |
 
 ### Representations
 
-Function bodies can be expressed in different formats. In this spec:
+Each overload can have multiple dialect-specific representations, but at most one per dialect.
 
-* **SQL representation** is supported.
-* A function version can include multiple SQL representations (different dialects), but at most one per dialect.
+| Requirement | Field name     | Description                                      |
+|-------------|----------------|--------------------------------------------------|
+| *required*  | `rep-id`       | Identifier for the representation.               |
+| *required*  | `dialect-type` | SQL dialect identifier (e.g., `spark`, `trino`). |
+| *required*  | `body`         | SQL expression or query.                         |
 
-| Requirement | Field name | Description                                                  |
-| ----------- | ---------- | ------------------------------------------------------------ |
-| *required*  | `type`     | Must be `"sql"`.                                             |
-| *required*  | `dialect`  | SQL dialect (`trino`, `snowflake`, `spark`, `dremio`, etc.). |
-| *required*  | `body`     | SQL expression or query implementing the function.           |
 
-### Version log
+### Version log (like metadata.json log in table format, do we need it?)
 
 Tracks transitions of `current-version-id`.
 
@@ -121,12 +113,6 @@ Tracks transitions of `current-version-id`.
 | ----------- | -------------- | ---------------------------- |
 | *required*  | `timestamp-ms` | Timestamp of update.         |
 | *required*  | `version-id`   | Version that became current. |
-
-### (De-)serialization & Compatibility
-
-* Parsing begins with `format-version`.
-* JSON structure is validated per this spec.
-* Compatible evolution: new format versions must preserve backward compatibility.
 
 ## Appendix A: Example
 
@@ -139,14 +125,13 @@ RETURNS TABLE (name VARCHAR, color VARCHAR)
 RETURN SELECT name, color FROM fruits WHERE color = c;
 ```
 
-The serialized metadata:
+## Example
 
 ```json
 {
   "function-uuid": "018ec9ac-7680-7d39-b8a3-6c726bafd1aa",
   "format-version": 1,
-  "location": "file:/var/orchard/fruits_by_color",
-  "signatures": [
+  "signature-defs": [
     {
       "signature-id": 1,
       "parameters": [
@@ -158,31 +143,30 @@ The serialized metadata:
           { "id": 1, "name": "name", "type": "string" },
           { "id": 2, "name": "color", "type": "string" }
         ]
-      }
+      },
+      "doc": "Return fruits of specific color from fruits table"
     }
   ],
-  "current-version-id": 1,
   "versions": [
     {
-      "version-id": 1,
-      "signature-id": 1,
-      "timestamp-ms": 1712780589806,
-      "summary": { "engine-name": "Dremio", "engine-version": "25.0.0" },
-      "representations": [
+      "version-id": "v1",
+      "overloads": [
         {
-          "type": "sql",
-          "dialect": "dremio",
-          "body": "SELECT name, color FROM fruits WHERE color = c"
+          "overload-id": 1,
+          "signature-id": 1,
+          "deterministic": true,
+          "representations": [
+            {
+              "rep-id": "rep1",
+              "dialect-type": "dremio",
+              "body": "SELECT name, color FROM fruits WHERE color = c"
+            }
+          ],
+          "update-at-version": "v1"
         }
-      ],
-      "default-catalog": "prod",
-      "default-namespace": ["orchard"],
-      "comment": "Return fruits of specific color from fruits table"
+      ]
     }
   ],
-  "version-log": [
-    { "timestamp-ms": 1712780589806, "version-id": 1 }
-  ],
-  "function-type": "TABLE"
+  "open-properties": { "comment": "UDF for filtering fruits by color" },
+  "secure": { "owner": "orchard-team" }
 }
-```
